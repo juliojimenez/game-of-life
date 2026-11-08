@@ -1,0 +1,17 @@
+# Compiled Lisp
+*.fasl
+*.fas
+*.lib
+*.o
+
+# The executable (make bin)
+bin/
+
+# macOS
+.DS_Store
+
+# Build logs (make build, build-ecl, build-ccl)
+build*.log
+
+# Python bytecode (tests/pty-smoke.py)
+__pycache__/

@@ -1,0 +1,217 @@
+;;;; tests/test-patterns.lisp — tests for src/patterns.lisp, the library (DESIGN.md §5.4).
+
+(in-package :game-of-life-test)
+
+(defparameter *library-keys*
+  '("block" "beehive" "loaf" "boat" "tub" "ship" "pond"
+    "blinker" "toad" "beacon" "clock" "figure-eight" "pentadecathlon" "pulsar" "galaxy" "tumbler"
+    "glider" "lwss" "mwss" "hwss" "r-pentomino" "diehard" "acorn" "gosper-glider-gun")
+  "Every key DESIGN.md §4.6 puts in the library, in library order.")
+
+(deftest patterns/library-parses
+  (let ((entries (list-patterns)))
+    (is (<= 24 (length entries)))
+    (is (not (eq (list-patterns) (list-patterns))) "list-patterns returns a fresh list")
+    (let ((keys (mapcar #'pattern-entry-key entries)))
+      (is (null (set-difference *library-keys* keys :test #'string=))
+          "every DESIGN.md key is in the library: missing ~A"
+          (set-difference *library-keys* keys :test #'string=))
+      (is (null (set-difference keys *library-keys* :test #'string=))
+          "no key beyond DESIGN.md's: extra ~A"
+          (set-difference keys *library-keys* :test #'string=)))
+    (dolist (e entries)
+      (let* ((key (pattern-entry-key e))
+             (p (pattern key)))
+        (is (pattern-entry-p e))
+        (is (pattern-p p) "~A parses" key)
+        (is (string= (pattern-entry-name e) (pattern-name p)) "~A carries the entry's name" key)
+        (is (plusp (pattern-population p)) "~A has cells" key)
+        (is (plusp (pattern-width p)) "~A has a width" key)
+        (is (plusp (pattern-height p)) "~A has a height" key)
+        (is (member (pattern-entry-category e)
+                    '(:still-life :oscillator :spaceship :methuselah :gun))
+            "~A has a known category" key)
+        (is (or (null (pattern-entry-period e)) (integerp (pattern-entry-period e)))
+            "~A has an integer or nil period" key)
+        (is (stringp (pattern-entry-description e)) "~A has a description" key)
+        (is (eq p (pattern key)) "~A is cached after the first parse" key)))
+    ;; display names
+    (is-equal "Kok's galaxy" (pattern-entry-name (find-pattern-entry "galaxy")))
+    (is-equal "Gosper glider gun" (pattern-entry-name (find-pattern-entry "gosper-glider-gun")))
+    (is-equal "Lightweight spaceship" (pattern-entry-name (find-pattern-entry "lwss")))
+    (is-equal "Middleweight spaceship" (pattern-entry-name (find-pattern-entry "mwss")))
+    (is-equal "Heavyweight spaceship" (pattern-entry-name (find-pattern-entry "hwss")))
+    (is-equal "R-pentomino" (pattern-entry-name (find-pattern-entry "r-pentomino")))
+    (is-equal "Figure eight" (pattern-entry-name (find-pattern-entry "figure-eight")))
+    (is-equal "Glider" (pattern-name (pattern "glider")))))
+
+(deftest patterns/still-lifes
+  (let ((count 0))
+    (dolist (e (list-patterns))
+      (when (eq (pattern-entry-category e) :still-life)
+        (incf count)
+        (let* ((key (pattern-entry-key e))
+               (w (%pattern-world key))
+               (start (copy-world w)))
+          (step-world w)
+          (is (world-equal start w) "~A is unchanged after a step" key)
+          (is (= 0 (world-births w)) "~A has no births" key)
+          (is (= 0 (world-deaths w)) "~A has no deaths" key)
+          (is (eql 1 (pattern-entry-period e)) "~A has period 1" key))))
+    (is-equal 7 count)))
+
+(deftest patterns/oscillators
+  (let ((count 0))
+    (dolist (e (list-patterns))
+      (when (eq (pattern-entry-category e) :oscillator)
+        (incf count)
+        (let* ((key (pattern-entry-key e))
+               (p (pattern-entry-period e))
+               (w (%pattern-world key))
+               (start (copy-world w)))
+          (is (and (integerp p) (> p 1)) "~A has an oscillator period" key)
+          (when (integerp p)
+            (loop for i from 1 below p
+                  do (step-world w)
+                     (is (not (world-equal start w)) "~A differs from the start at step ~D" key i))
+            (step-world w)
+            (is (world-equal start w) "~A returns at step ~D" key p)))))
+    (is-equal 9 count)))
+
+(deftest patterns/spaceships
+  (let ((count 0))
+    (dolist (e (list-patterns))
+      (when (eq (pattern-entry-category e) :spaceship)
+        (incf count)
+        (let ((key (pattern-entry-key e)))
+          (is (eql 4 (pattern-entry-period e)) "~A has period 4" key)
+          (multiple-value-bind (dx dy translated-p) (%shift-after-steps (%pattern-world key) 4)
+            (is translated-p "~A after 4 steps is a translation of the start" key)
+            (is (equal (if (string= key "glider") '(1 1) '(2 0)) (list (abs dx) (abs dy)))
+                "~A moves by (~D,~D) in 4 steps" key dx dy)))))
+    (is-equal 4 count)))
+
+(deftest patterns/populations
+  (loop for (key n) in '(("glider" 5) ("lwss" 9) ("mwss" 11) ("hwss" 13) ("pulsar" 48)
+                         ("pentadecathlon" 12) ("galaxy" 48) ("gosper-glider-gun" 36)
+                         ("r-pentomino" 5) ("diehard" 7) ("acorn" 7) ("block" 4) ("beehive" 6)
+                         ("loaf" 7) ("boat" 5) ("tub" 4) ("ship" 6) ("pond" 8) ("blinker" 3)
+                         ("toad" 6) ("beacon" 6) ("clock" 6) ("figure-eight" 18) ("tumbler" 16))
+        do (is (= n (pattern-population (pattern key))) "~A has ~D cells, got ~D"
+               key n (pattern-population (pattern key)))
+           (is (= n (length (cells-of key))) "~A's cell list has ~D entries" key n))
+  ;; sizes of a few drawings
+  (is-equal '(3 3) (list (pattern-width (pattern "glider")) (pattern-height (pattern "glider"))))
+  (is-equal '(13 13) (list (pattern-width (pattern "pulsar")) (pattern-height (pattern "pulsar"))))
+  (is-equal '(36 9) (list (pattern-width (pattern "gosper-glider-gun"))
+                          (pattern-height (pattern "gosper-glider-gun"))))
+  (is-equal '(10 3) (list (pattern-width (pattern "pentadecathlon"))
+                          (pattern-height (pattern "pentadecathlon"))))
+  (is-equal '(9 9) (list (pattern-width (pattern "galaxy")) (pattern-height (pattern "galaxy"))))
+  (is-equal *glider-cells* (cells-of "glider")))
+
+(deftest patterns/diehard
+  (let ((w (%pattern-world "diehard")))
+    (is-equal 7 (population w))
+    (step-world w 129)
+    (is (plusp (population w)) "alive at generation 129")
+    (step-world w)
+    (is-equal 130 (world-generation w))
+    (is-equal 0 (population w))
+    (is-equal '() (live-cells w))
+    (is (null (bounding-box w)))))
+
+(deftest patterns/r-pentomino
+  (let ((w (%pattern-world "r-pentomino")))
+    (is-equal 5 (population w))
+    (step-world w 1103)
+    (is-equal 1103 (world-generation w))
+    (is-equal 116 (population w))
+    (loop for g from 1104 to 1120
+          do (step-world w)
+             (is (= 116 (population w)) "population 116 at generation ~D, got ~D"
+                 g (population w)))))
+
+(deftest patterns/acorn
+  (cond ((long-tests-p)
+         (let ((w (%pattern-world "acorn")))
+           (is-equal 7 (population w))
+           (step-world w 5206)
+           (is-equal 5206 (world-generation w))
+           (is-equal 633 (population w))))
+        (t
+         (format t "skipped (set LIFE_LONG_TESTS=1) ")
+         (%pass))))
+
+(deftest patterns/gosper-gun
+  (let ((w (%pattern-world "gosper-glider-gun"))
+        (populations '()))
+    (is-equal 36 (population w))
+    (loop for g from 30 to 180 by 30
+          do (step-world w 30)
+             (is (= g (world-generation w)) "generation ~D" g)
+             (push (population w) populations))
+    (setf populations (nreverse populations))
+    (is-equal 6 (length populations))
+    (is (loop for (a b) on populations
+              while b
+              always (= (- b a) 5))
+        "population grows by exactly 5 every 30 generations: ~A" populations)
+    (is (> (first populations) 36) "the first glider is out after 30 generations")))
+
+(deftest patterns/lookup
+  (let ((gun (find-pattern-entry "gosper-glider-gun")))
+    (is (pattern-entry-p gun))
+    (is (eq gun (find-pattern-entry "Gosper glider gun")))
+    (is (eq gun (find-pattern-entry "gosper_glider_gun")))
+    (is (eq gun (find-pattern-entry "GOSPER-GLIDER-GUN")))
+    (is (eq gun (find-pattern-entry "Gosper_Glider gun")))
+    (is (eq gun (find-pattern-entry :gosper-glider-gun)))
+    (is-equal "gosper-glider-gun" (pattern-entry-key gun))
+    (is-equal :gun (pattern-entry-category gun))
+    (is-equal 30 (pattern-entry-period gun))
+    (is-equal "The first known gun; emits a glider every 30 generations."
+              (pattern-entry-description gun)))
+  (let ((glider (find-pattern-entry :glider)))
+    (is (pattern-entry-p glider))
+    (is-equal "glider" (pattern-entry-key glider))
+    (is-equal "Glider" (pattern-entry-name glider))
+    (is-equal :spaceship (pattern-entry-category glider))
+    (is-equal 4 (pattern-entry-period glider)))
+  (is-equal :methuselah (pattern-entry-category (find-pattern-entry "acorn")))
+  (is-equal nil (pattern-entry-period (find-pattern-entry "acorn")))
+  (is-equal :oscillator (pattern-entry-category (find-pattern-entry "pulsar")))
+  (is-equal 3 (pattern-entry-period (find-pattern-entry "pulsar")))
+  (is-equal :still-life (pattern-entry-category (find-pattern-entry "block")))
+  (is (null (find-pattern-entry "nosuch")))
+  (is (null (find-pattern-entry "")))
+  ;; pattern resolves structs, strings and symbols
+  (is (eq (pattern "glider") (pattern (pattern "glider"))) "a pattern resolves to itself")
+  (is (pattern-equal (pattern "glider") (pattern :glider)))
+  (is (pattern-equal (pattern "glider") (pattern "GLIDER")))
+  (is (pattern-equal (pattern "gosper-glider-gun") (pattern "Gosper glider gun")))
+  (signals unknown-pattern-error (pattern "nosuch"))
+  (signals unknown-pattern-error (pattern :nosuch))
+  (let ((e (handler-case (progn (pattern "nosuch") nil)
+             (unknown-pattern-error (c) c))))
+    (is (typep e 'life-error))
+    (is (equal "nosuch" (unknown-pattern-error-name e)) "the condition carries the name")
+    (is (search "--list" (princ-to-string e)) "the report mentions --list")
+    (is (search "nosuch" (princ-to-string e)) "the report quotes the name")))
+
+(deftest patterns/print-list
+  (let ((text (with-output-to-string (s) (print-pattern-list s))))
+    (dolist (key *library-keys*)
+      (is (search key text) "the list mentions ~A" key))
+    (is (search "spaceship" text))
+    (is (search "period 4" text))
+    (is (search "period 30" text))
+    (is (search "5 cells" text))
+    (is (search "36 cells" text))
+    (is (search "The first known gun; emits a glider every 30 generations." text))
+    (is (<= 24 (count #\Newline text)) "one line per entry"))
+  (multiple-value-bind (value out err) (with-captured-output (o e) (print-pattern-list))
+    (declare (ignore value))
+    (is (search "glider" out) "the default stream is *standard-output*")
+    (is (search "gosper-glider-gun" out))
+    (is-equal "" err)))

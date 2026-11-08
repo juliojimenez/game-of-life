@@ -1,0 +1,94 @@
+# Game of Life continuous integration: the forced build must produce no WARNING of any kind (DESIGN.md §2),
+# then the whole suite runs through the hand-written harness, which exits non-zero on any failure.
+# SBCL on Ubuntu and macOS (with the slow oracles, the executable, and the pseudo-terminal smoke test),
+# then ECL on macOS (the portability job).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SBCL_VERSION: "2.6.10"
+
+jobs:
+  test:
+    name: build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL ${{ env.SBCL_VERSION }} (official x86-64 Linux binary)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl -sSL -o sbcl.tar.bz2 "https://downloads.sourceforge.net/project/sbcl/sbcl/${SBCL_VERSION}/sbcl-${SBCL_VERSION}-x86-64-linux-binary.tar.bz2"
+          tar xjf sbcl.tar.bz2
+          (cd "sbcl-${SBCL_VERSION}-x86-64-linux" && sudo sh install.sh)
+          sbcl --version
+
+      - name: Install SBCL (Homebrew bottle)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install sbcl
+          sbcl --version
+
+      - name: Build (a forced compile; any WARNING fails the job)
+        shell: bash
+        run: make build
+
+      - name: Test (with the slow oracles)
+        shell: bash
+        run: LIFE_LONG_TESTS=1 make test
+
+      - name: Executable
+        shell: bash
+        run: |
+          make bin
+          bin/life --version
+          bin/life --list
+          bin/life r-pentomino --headless -g 1103 | tee rpent.txt
+          grep -q "population 116" rpent.txt
+
+      - name: Smoke test through a pseudo-terminal
+        shell: bash
+        run: make smoke
+
+  # The portability job: the same build and suite on ECL, through the same compat layer. A debugger hook
+  # turns any unhandled error into a message and a non-zero exit instead of a prompt waiting on stdin.
+  ecl:
+    name: build and test (ecl, macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ECL (Homebrew bottle)
+        shell: bash
+        run: |
+          brew install ecl
+          ecl --version
+
+      - name: Build (a forced compile; any WARNING fails the job)
+        shell: bash
+        run: make build-ecl
+
+      - name: Test
+        shell: bash
+        run: make test-ecl
